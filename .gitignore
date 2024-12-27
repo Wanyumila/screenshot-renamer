@@ -31,4 +31,8 @@ ENV/
 *.swo
 
 # macOS
-.DS_Store 
+.DS_Store
+
+# Configuration
+config.py
+config_local.py 

@@ -8,6 +8,7 @@
 2. 使用 OCR 识别图片文字
 3. 调用 AI 生成文件名
 4. 移动文件到指定文件夹并重命名
+5. 支持无文字图片的物体识别
 """
 
 import os
@@ -18,9 +19,15 @@ import tkinter as tk
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import easyocr
+from ultralytics import YOLO
 
-# 设置 API key
-API_KEY = 'sk-a7adb9abbd004a8dbabfac022dbabf72'
+# 导入配置
+try:
+    from config import *
+except ImportError:
+    print("\n错误：找不到配置文件！")
+    print("请复制 config_template.py 为 config.py 并设置你的 API Key")
+    exit(1)
 
 def get_screen_size():
     """在主线程中获取屏幕尺寸"""
@@ -35,20 +42,60 @@ class ScreenshotHandler(FileSystemEventHandler):
         print("\n=== 初始化截图处理器 ===")
         self.client = OpenAI(
             api_key=API_KEY,
-            base_url="https://api.deepseek.com"
+            base_url=AI_BASE_URL
         )
         # 初始化 OCR reader
         print("初始化 OCR 识别器...")
-        self.reader = easyocr.Reader(['ch_sim', 'en'])
+        self.reader = easyocr.Reader(OCR_LANGUAGES)
+        
+        # 初始化 YOLO 模型
+        print("初始化物体识别模型...")
+        self.model = YOLO(OBJECT_DETECTION['model'])
+        print(f"使用模型: {OBJECT_DETECTION['model']}")
+        
         # 保存屏幕尺寸
         self.screen_width, self.screen_height = screen_size
         print("初始化完成")
-        
+
     def is_screenshot(self, filename):
         clean_name = filename.lstrip('.')
         is_ss = clean_name.startswith("Screenshot") and clean_name.endswith(".png")
         print(f"检查文件: {filename} -> 清理后: {clean_name} -> 是否为截图: {is_ss}")
         return is_ss
+
+    def detect_objects(self, image_path):
+        """使用 YOLOv8 识别图片中的物体"""
+        try:
+            print("正在进行物体识别...")
+            # 使用配置的图像尺寸
+            results = self.model(image_path, imgsz=OBJECT_DETECTION['image_size'], verbose=False)[0]
+            objects = []
+            
+            # 打印识别结果
+            print("\n识别到的物体:")
+            for r in results.boxes.data.tolist():
+                confidence = float(r[4])
+                class_id = int(r[5])
+                class_name = results.names[class_id]
+                print(f"- {class_name} (置信度: {confidence:.2f})")
+                
+                if confidence > OBJECT_DETECTION['confidence']:
+                    objects.append((class_name, confidence))
+            
+            if not objects:
+                print("没有识别到任何物体")
+                return None
+            
+            # 按置信度排序并只选择最高的一个
+            objects.sort(key=lambda x: x[1], reverse=True)
+            detected = objects[0][0]  # 只取置信度最高的物体名称
+            
+            print(f"选择的物体: {detected}")
+            return detected
+            
+        except Exception as e:
+            print(f"物体识别失败: {str(e)}")
+            return None
 
     def get_image_description(self, image_path):
         try:
@@ -71,7 +118,10 @@ class ScreenshotHandler(FileSystemEventHandler):
             # 提取所有文字
             texts = [result[1] for result in results]
             if not texts:
-                print("未识别到文字")
+                print("未识别到文字，尝试物体识别...")
+                description = self.detect_objects(image_path)
+                if description:
+                    return description, image_path
                 return "未知图片", image_path
                 
             full_text = " ".join(texts)
@@ -81,7 +131,7 @@ class ScreenshotHandler(FileSystemEventHandler):
                 # 使用 AI 提取关键词
                 print("正在生成文件名...")
                 response = self.client.chat.completions.create(
-                    model="deepseek-chat",
+                    model=AI_MODEL,
                     messages=[
                         {
                             "role": "system",
@@ -144,15 +194,16 @@ class ScreenshotHandler(FileSystemEventHandler):
             # 等待临时文件消失和正式文件出现
             max_attempts = 10
             for attempt in range(max_attempts):
-                if os.path.exists(final_path):
+                if not os.path.exists(file_path) and os.path.exists(final_path):
                     print(f"找到正式文件: {final_path}")
-                    time.sleep(1)  # 等待文件系统稳定
+                    time.sleep(0.5)  # 等待文件系统稳定
                     self.process_screenshot(final_path)
                     break
                 time.sleep(0.5)
             return
             
         # 处理正式文件
+        time.sleep(0.5)  # 等待文件系统稳定
         self.process_screenshot(file_path)
 
     def process_screenshot(self, file_path):
@@ -176,7 +227,7 @@ class ScreenshotHandler(FileSystemEventHandler):
         if description and final_path and os.path.exists(final_path):
             try:
                 # 确保截图文件夹存在
-                screenshots_dir = os.path.join(os.path.expanduser("~/Desktop"), "截图")
+                screenshots_dir = os.path.join(os.path.expanduser("~/Desktop"), SCREENSHOT_FOLDER)
                 if not os.path.exists(screenshots_dir):
                     os.makedirs(screenshots_dir)
                     print(f"创建截图文件夹: {screenshots_dir}")
