@@ -41,4 +41,4 @@ pip install -r requirements.txt
 - openai: AI 接口调用
 - Pillow: 图像处理
 - watchdog: 文件系统监控
-- easyocr: OCR 文字识别 
+- easyocr: OCR 文字识别
